@@ -19,6 +19,15 @@ import {
   formatPokemonName,
   josa,
 } from "./effecthandler.js";
+import { setHazard, applyHazardsOnSwitchIn, defaultField } from "./field.js";
+import {
+  setWeather,
+  weatherPowerMultiplier,
+  preventsFreeze,
+  sandstormDefenseBonus,
+  tickWeather,
+  applyWeatherDamage,
+} from "./weather.js";
 
 const roomRef = doc(db, "rooms", ROOM_ID);
 const isSpectatorView = new URLSearchParams(location.search).get("spectator") === "true";
@@ -47,6 +56,9 @@ const BATTLE_RESET_FIELDS = {
   p2_pending_switch: false,
   p1_ranks: null,
   p2_ranks: null,
+  p1_field: null,
+  p2_field: null,
+  weather: null,
   battle_turn: null,
   round_first: null,
   round_no: 0,
@@ -213,7 +225,7 @@ function handleFaintSwitch(entries, sideKey, activeIdx) {
   return { fainted: true, allFainted: !hasAliveBench, name };
 }
 
-function buildTurnAdvanceUpdate(room, entries, activeIdx, currentTurn, log, events, alreadyPendingSides = new Set()) {
+function buildTurnAdvanceUpdate(room, entries, activeIdx, currentTurn, log, events, alreadyPendingSides = new Set(), weather = room.weather ?? null) {
   const update = {};
 
   if (alreadyPendingSides.size > 0) {
@@ -224,7 +236,7 @@ function buildTurnAdvanceUpdate(room, entries, activeIdx, currentTurn, log, even
 
   if (room.battle_turn === room.round_first) {
     update.battle_turn = room.battle_turn === "p1" ? "p2" : "p1";
-    return update; 
+    return update;
   }
 
   for (const side of ["p1", "p2"]) {
@@ -236,6 +248,24 @@ function buildTurnAdvanceUpdate(room, entries, activeIdx, currentTurn, log, even
       log.push(tick.message);
       events.push({ logIndex: log.length - 1, type: "hit", side, hp: tick.pokemon.hp, hasAttacker: false });
     }
+  }
+
+  // 날씨 라운드 종료 처리: 지속 로그 -> 모래바람/싸라기눈 데미지 -> (종료라면) 종료 로그
+  const weatherTick = tickWeather(weather, currentTurn);
+  if (weatherTick.active) {
+    log.push(weatherTick.continueMessage);
+    for (const side of ["p1", "p2"]) {
+      const pkmn = entries[side][activeIdx[side]];
+      if (!pkmn) continue;
+      const dmgResult = applyWeatherDamage(pkmn, weather.type);
+      if (dmgResult.damage > 0) {
+        entries[side][activeIdx[side]] = dmgResult.pokemon;
+        log.push(dmgResult.message);
+        events.push({ logIndex: log.length - 1, type: "hit", side, hp: dmgResult.pokemon.hp, hasAttacker: false });
+      }
+    }
+    if (weatherTick.expired) log.push(weatherTick.endMessage);
+    update.weather = weatherTick.weather;
   }
 
   let winner = null;
@@ -373,6 +403,9 @@ async function maybeInitRound(room) {
     p2_roll: r2,
     p1_ranks: defaultRanks(),
     p2_ranks: defaultRanks(),
+    p1_field: defaultField(),
+    p2_field: defaultField(),
+    weather: null,
     p1_pending_switch: false,
     p2_pending_switch: false,
     battle_log: [
@@ -428,6 +461,8 @@ async function useMove(moveIdx) {
 
     let myRanks = room[`${myKey}_ranks`] ?? defaultRanks();
     let oppRanks = room[`${oppKey}_ranks`] ?? defaultRanks();
+    let oppField = room[`${oppKey}_field`] ?? defaultField();
+    let currentWeather = room.weather ?? null;
 
     const log = [...(room.battle_log ?? [])];
     const events = [...(room.battle_event_log ?? [])];
@@ -487,12 +522,14 @@ async function useMove(moveIdx) {
           log.push(`${defenderName}에게는 맞지 않았다!`);
         } else {
           // 공격 랭크업/다운: (위력 + 공격력x4 + 1d10) 전체에 곱해짐, 타입상성/자속 적용 "이전" 보정값 (급소율에는 영향 없음)
-          // 방어 랭크업/다운: 방어력x3 항에만 곱해짐
+          // 방어 랭크업/다운: 방어력x3 항에만 곱해짐. 모래바람 중 바위 타입 방어자는 방어 랭크 +2 보정을 추가로 받음
           const atkMult = rankMultiplier(getEffectiveRank(myRanks, "atk", currentTurn));
-          const defMult = rankMultiplier(getEffectiveRank(oppRanks, "def", currentTurn));
+          const sandDefBonus = sandstormDefenseBonus(defender, currentWeather?.type);
+          const defMult = rankMultiplier(clampRank(getEffectiveRank(oppRanks, "def", currentTurn) + sandDefBonus));
 
           const typeMult = getDefenderTypeMultiplier(moveData.type, defender.types);
           const stab = hasStab(attacker.types, moveData.type) ? 1.3 : 1;
+          const weatherMult = weatherPowerMultiplier(currentWeather?.type, moveData.type);
 
           let updatedDefender = { ...defender };
 
@@ -500,7 +537,7 @@ async function useMove(moveIdx) {
           if (moveData.power > 0) {
             // 최종 피해량 = ((위력 + 공격력x4 + 1d10) x 공격랭크보정 x 타입상성 x 자속) - (방어력x3 x 방어랭크보정)
             const rawDamage =
-              (moveData.power + attacker.atk * 4 + rollD10()) * atkMult * typeMult * stab -
+              (moveData.power + attacker.atk * 4 + rollD10()) * atkMult * typeMult * stab * weatherMult -
               defender.def * 3 * defMult;
             const isCrit = rollCrit(attacker);
             const dmg = Math.max(0, Math.round(rawDamage * (isCrit ? 1.5 : 1)));
@@ -516,12 +553,32 @@ async function useMove(moveIdx) {
             else if (typeMult < 1) log.push("효과가 별로인 듯하다...");
           }
 
+          // 장판(스텔스록/독압정) 설치. 설치 당시엔 데미지/효과 없이 상대 진영에 표시만 해둠.
+          if (moveData.field) {
+            const hazardResult = setHazard(oppField, moveData.field);
+            oppField = hazardResult.field;
+            update[`${oppKey}_field`] = oppField;
+            if (hazardResult.message) log.push(hazardResult.message);
+          }
+
+          // 날씨 설치. 설치 당시엔 지속/데미지 로그 없이 시작 로그만 남김 (라운드 종료 처리는 buildTurnAdvanceUpdate에서)
+          if (moveData.effect?.weather) {
+            const weatherResult = setWeather(moveData.effect.weather, moveData.effect.weatherTurns ?? 5, currentTurn);
+            currentWeather = weatherResult.weather;
+            update.weather = currentWeather;
+            if (weatherResult.message) log.push(weatherResult.message);
+          }
+
           // 상태이상 / 상태변화 부여 시도
           if (moveData.effect && Math.random() < moveData.effect.chance) {
             if (moveData.effect.status) {
-              const statusResult = applyStatus(updatedDefender, moveData.effect.status, currentTurn);
-              updatedDefender = statusResult.pokemon;
-              if (statusResult.message) log.push(statusResult.message);
+              if (moveData.effect.status === "얼음" && preventsFreeze(currentWeather?.type)) {
+                // 쾌청 상태에서는 얼음 상태이상에 걸리지 않음
+              } else {
+                const statusResult = applyStatus(updatedDefender, moveData.effect.status, currentTurn);
+                updatedDefender = statusResult.pokemon;
+                if (statusResult.message) log.push(statusResult.message);
+              }
             } else if (moveData.effect.volatile) {
               const volName = moveData.effect.volatile;
               const dn = updatedDefender.name ?? "포켓몬";
@@ -585,7 +642,8 @@ async function useMove(moveIdx) {
 
     const advance = buildTurnAdvanceUpdate(
       room, entries, activeIdx, currentTurn, log, events,
-      directPendingSide ? new Set([directPendingSide]) : undefined
+      directPendingSide ? new Set([directPendingSide]) : undefined,
+      currentWeather
     );
     Object.assign(update, advance);
     update[`${myKey}_entry`] = entries[myKey];
@@ -636,14 +694,44 @@ async function switchPokemon(targetIdx) {
   update[`${myKey}_active_idx`] = targetIdx;
   update[`${myKey}_ranks`] = defaultRanks(); // 교체하면 랭크 초기화
 
+  const myField = room[`${myKey}_field`] ?? defaultField();
+
   if (pendingSwitch) {
+    const oppKey = myKey === "p1" ? "p2" : "p1";
+
     update[`${myKey}_pending_switch`] = false;
     const pName = displayName(myKey, room);
     const dn = target.name ?? "포켓몬";
     log.push(`${pName}${josa(pName, "은는")} ${dn}${josa(dn, "을를")} 내보냈다!`);
     events.push({ logIndex: log.length - 1, type: "switch", side: myKey, idx: targetIdx });
 
-    const oppKey = myKey === "p1" ? "p2" : "p1";
+    // 장판(스텔스록/독압정) 효과 적용
+    const hazard = applyHazardsOnSwitchIn(target, myField, room.round_no ?? 1);
+    entries[myKey][targetIdx] = hazard.pokemon;
+    hazard.messages.forEach((msg) => {
+      log.push(msg);
+      events.push({ logIndex: log.length - 1, type: "hit", side: myKey, hp: hazard.pokemon.hp, hasAttacker: false });
+    });
+
+    const hazardFaint = handleFaintSwitch(entries, myKey, activeIdx);
+    if (hazardFaint.fainted) {
+      log.push(`${hazardFaint.name}${josa(hazardFaint.name, "은는")} 쓰러졌다!`);
+      if (hazardFaint.allFainted) {
+        update.battle_winner = oppKey;
+        update[`${myKey}_pending_switch`] = false;
+        log.push(`${displayName(oppKey, room)} 승리!`);
+      } else {
+        update[`${myKey}_pending_switch`] = true;
+      }
+      update[`${myKey}_entry`] = entries[myKey];
+      update.battle_log = log;
+      update.battle_event_log = events;
+      await updateDoc(roomRef, update);
+      return;
+    }
+
+    update[`${myKey}_entry`] = entries[myKey];
+
     const oppStillPending = !!room[`${oppKey}_pending_switch`];
     if (!oppStillPending) {
       // 양쪽 다 교체 끝났으면 다음 라운드 다이스
@@ -676,6 +764,32 @@ async function switchPokemon(targetIdx) {
   events.push({ logIndex: log.length - 1, type: "switch", side: myKey, idx: targetIdx });
 
   const oppKeyForAdvance = myKey === "p1" ? "p2" : "p1";
+
+  // 장판(스텔스록/독압정) 효과 적용
+  const hazard = applyHazardsOnSwitchIn(target, myField, room.round_no ?? 1);
+  entries[myKey][targetIdx] = hazard.pokemon;
+  hazard.messages.forEach((msg) => {
+    log.push(msg);
+    events.push({ logIndex: log.length - 1, type: "hit", side: myKey, hp: hazard.pokemon.hp, hasAttacker: false });
+  });
+
+  const hazardFaint = handleFaintSwitch(entries, myKey, activeIdx);
+  if (hazardFaint.fainted) {
+    log.push(`${hazardFaint.name}${josa(hazardFaint.name, "은는")} 쓰러졌다!`);
+    if (hazardFaint.allFainted) {
+      update.battle_winner = oppKeyForAdvance;
+      log.push(`${displayName(oppKeyForAdvance, room)} 승리!`);
+    } else {
+      update[`${myKey}_pending_switch`] = true;
+    }
+    update[`${myKey}_entry`] = entries[myKey];
+    update[`${oppKeyForAdvance}_entry`] = entries[oppKeyForAdvance];
+    update.battle_log = log;
+    update.battle_event_log = events;
+    await updateDoc(roomRef, update);
+    return;
+  }
+
   const advance = buildTurnAdvanceUpdate(room, entries, activeIdx, room.round_no ?? 1, log, events);
   Object.assign(update, advance);
   update[`${myKey}_entry`] = entries[myKey];
