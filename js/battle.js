@@ -69,9 +69,22 @@ const BATTLE_RESET_FIELDS = {
   battle_winner: null,
 };
 
+// battleroom에 인트로 오버레이가 있는 페이지에서는, 인트로(양쪽 터치 + VS 연출)가 끝나기 전까지
+// 첫 라운드(주사위 굴리기)를 시작하지 않는다. intro.js가 끝나면 "battle:introDone"을 쏴준다.
+const hasIntro = !!document.getElementById("intro-overlay");
+let introReady = !hasIntro;
+let latestRoomForInit = null;
+
+if (hasIntro) {
+  document.addEventListener("battle:introDone", () => {
+    introReady = true;
+    if (latestRoomForInit) maybeInitRound(latestRoomForInit);
+  }, { once: true });
+}
+
 let myUid = null;
-let mySlot = null; 
-let roundInitInFlight = false; 
+let mySlot = null;
+let roundInitInFlight = false;
 let lastAnimatedRound = 0; 
 let isAnimating = false; 
 let diceRolling = false; 
@@ -326,6 +339,7 @@ function listenBattle() {
     const isNewRound = !!room.battle_turn && roundNo !== lastAnimatedRound;
 
     renderBoard(room, isNewRound);
+    latestRoomForInit = room;
     maybeInitRound(room);
 
     if (isNewRound) {
@@ -379,6 +393,7 @@ function afterDiceSettled(room) {
 // 게임이 막 시작됐는데 아직 선공이 안 정해졌으면 player1이 한 번 굴려서 세팅.
 // round_no로 판단(battle_turn만 보면 강제교체 대기 중의 null 상태와 구분이 안 돼서 재시작 취급될 수 있음).
 async function maybeInitRound(room) {
+  if (!introReady) return;
   if (!room.game_started || (room.round_no ?? 0) > 0 || room.battle_winner) return;
   if (mySlot !== "player1" || roundInitInFlight) return;
 
