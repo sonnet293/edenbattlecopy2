@@ -10,6 +10,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import {
   doc,
+  getDoc,
   collection,
   query,
   where,
@@ -66,23 +67,65 @@ function renderRooms(rooms) {
 }
 
 // ---- 로그인 ----
+let loginFromForm = false; // 이 페이지 폼으로 방금 로그인했는지 (GM이 아니면 바로 로그아웃시킴)
+
 $("gm-login-btn").onclick = async () => {
+  $("gm-login-msg").textContent = "";
+  loginFromForm = true;
   try {
     await signInWithEmailAndPassword(auth, $("gm-email").value.trim(), $("gm-password").value);
   } catch (err) {
+    loginFromForm = false;
     $("gm-login-msg").textContent = "로그인 실패: 이메일/비밀번호를 확인해주세요.";
     console.error(err);
   }
 };
 $("gm-logout-btn").onclick = () => signOut(auth);
 
-onAuthStateChanged(auth, (user) => {
-  $("gm-login").style.display = user ? "none" : "block";
-  $("gm-panel").style.display = user ? "block" : "none";
+// 내 users 문서의 role이 "gm"인지 확인. 실제 권한은 규칙(firestore.rules의 isGM)이 같은 필드로 강제한다.
+async function isGMAccount(uid) {
+  const snap = await getDoc(doc(db, "users", uid));
+  return snap.data()?.role === "gm";
+}
+
+function showLogin(message = "") {
+  stopServer();
+  $("gm-login").style.display = "block";
+  $("gm-panel").style.display = "none";
+  $("gm-login-msg").textContent = message;
+}
+
+onAuthStateChanged(auth, async (user) => {
   if (!user) {
-    stopServer();
+    showLogin($("gm-login-msg").textContent);
     return;
   }
+
+  const fromForm = loginFromForm;
+  loginFromForm = false;
+
+  let allowed;
+  try {
+    allowed = await isGMAccount(user.uid);
+  } catch (err) {
+    showLogin(`GM 확인 실패: ${err.message}`);
+    return;
+  }
+
+  if (!allowed) {
+    if (fromForm) {
+      // 이 페이지에서 GM이 아닌 계정으로 로그인 시도 -> 즉시 로그아웃
+      await signOut(auth);
+      showLogin("GM 계정이 아닙니다.");
+    } else {
+      // 게임에서 이미 로그인된 플레이어 계정으로 들어온 경우엔 게임 세션을 끊지 않고 서버만 막음
+      showLogin("현재 로그인된 계정은 GM이 아닙니다. GM 계정으로 로그인하세요.");
+    }
+    return;
+  }
+
+  $("gm-login").style.display = "none";
+  $("gm-panel").style.display = "block";
   $("gm-uid").textContent = user.uid;
   startServer();
 });

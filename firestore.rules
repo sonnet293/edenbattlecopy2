@@ -1,7 +1,7 @@
 rules_version = '2';
 
 // Firebase 콘솔 > Firestore Database > 규칙 탭에 붙여넣고 게시.
-// GM_UID_HERE 를 gm/index.html 로그인 후 화면에 표시되는 GM UID로 바꿔야 한다.
+// GM 지정: Firestore 콘솔에서 users/{GM uid} 문서에 role: "gm" (string) 필드를 추가한다.
 service cloud.firestore {
   match /databases/{database}/documents {
 
@@ -9,8 +9,10 @@ service cloud.firestore {
       return request.auth != null;
     }
 
+    // users/{uid}.role == "gm" 인 계정이 GM. (문서가 없거나 role이 없으면 GM 아님)
     function isGM() {
-      return signedIn() && request.auth.uid in ['Fs8T7qR4hZSjMJSsOHoHJW6PDf72'];
+      return signedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.get('role', '') == 'gm';
     }
 
     // 플레이어가 직접 수정할 수 있는 로비/인트로 필드. 전투 상태(entry, hp, turn, log 등)는 GM만 쓸 수 있다.
@@ -23,9 +25,14 @@ service cloud.firestore {
       ]);
     }
 
+    // 본인 문서는 쓸 수 있지만 role 필드는 못 건드린다 (스스로 GM이 되는 것 방지). role은 콘솔에서만 지정.
     match /users/{uid} {
       allow read: if signedIn() && (request.auth.uid == uid || isGM());
-      allow write: if signedIn() && request.auth.uid == uid;
+      allow create: if signedIn() && request.auth.uid == uid
+        && !('role' in request.resource.data);
+      allow update: if signedIn() && request.auth.uid == uid
+        && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role']);
+      allow delete: if false;
     }
 
     match /rooms/{roomId} {
