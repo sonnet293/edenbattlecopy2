@@ -84,24 +84,7 @@ function listenRoom() {
         renderSwapStatus(room);
         updateButtonsBySlot(room, mySlot);
 
-        if (room.player1_ready && room.player2_ready && !room.game_started) {
-            if (mySlot === "player1" || mySlot === "player2") {
-                const firestoreSlot = mySlot === "player1" ? "p1" : "p2";
-                const userSnap = await getDoc(doc(db, "users", myUid));
-                const myEntry = userSnap.data()?.entry ?? [];
-                const myEntryWithMax = myEntry.map(pkmn => ({ ...pkmn, maxHp: pkmn.hp }));
-
-                await updateDoc(roomRef, {
-                    [`${firestoreSlot}_entry`]: myEntryWithMax,
-                    [`${firestoreSlot}_active_idx`]: 0,
-                });
-
-                if (mySlot === "player1") {
-                    await updateDoc(roomRef, { game_started: true, game_started_at: Date.now() });
-                }
-            }
-        }
-
+        // 양쪽 READY가 되면 GM 브라우저(gm/gm.js)가 엔트리를 등록하고 game_started를 켠다.
         if (room.game_started && mySlot) {
             const roomNumber = ROOM_ID.replace("battleroom", "");
             if (mySlot === "spectator") {

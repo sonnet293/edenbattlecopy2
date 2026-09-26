@@ -1,0 +1,48 @@
+rules_version = '2';
+
+// Firebase 콘솔 > Firestore Database > 규칙 탭에 붙여넣고 게시.
+// GM_UID_HERE 를 gm/index.html 로그인 후 화면에 표시되는 GM UID로 바꿔야 한다.
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isGM() {
+      return signedIn() && request.auth.uid in ['Fs8T7qR4hZSjMJSsOHoHJW6PDf72'];
+    }
+
+    // 플레이어가 직접 수정할 수 있는 로비/인트로 필드. 전투 상태(entry, hp, turn, log 등)는 GM만 쓸 수 있다.
+    function onlyLobbyKeys() {
+      return request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+        'player1_uid', 'player1_name', 'player1_ready',
+        'player2_uid', 'player2_name', 'player2_ready',
+        'spectators', 'spectator_names', 'swap_request',
+        'intro_ready_p1', 'intro_ready_p2', 'intro_done'
+      ]);
+    }
+
+    match /users/{uid} {
+      allow read: if signedIn() && (request.auth.uid == uid || isGM());
+      allow write: if signedIn() && request.auth.uid == uid;
+    }
+
+    match /rooms/{roomId} {
+      allow read: if signedIn();
+      allow create, delete: if isGM();
+      allow update: if isGM() || (signedIn() && onlyLobbyKeys());
+
+      // 플레이어 요청 큐. 본인 uid로 pending 요청만 만들 수 있고, 처리(상태 변경)는 GM만.
+      match /actions/{actionId} {
+        allow read: if isGM() || (signedIn() && resource.data.uid == request.auth.uid);
+        allow create: if signedIn()
+          && request.resource.data.uid == request.auth.uid
+          && request.resource.data.status == 'pending'
+          && request.resource.data.type in ['init', 'move', 'switch', 'leave']
+          && request.resource.data.keys().hasOnly(['uid', 'type', 'payload', 'round_no', 'status', 'createdAt']);
+        allow update, delete: if isGM();
+      }
+    }
+  }
+}
