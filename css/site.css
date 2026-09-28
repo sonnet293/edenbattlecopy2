@@ -155,6 +155,14 @@ button, a { -webkit-tap-highlight-color: transparent; }
   color: var(--accent-deep);
   font-size: .8rem;
 }
+.trainer-chip .initial.has-image { overflow: hidden; background: none; }
+.trainer-chip .initial img, .player-avatar img, .spectator-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: cover;
+}
 .trainer-chip .label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .text-btn {
   padding: 8px 10px;
@@ -480,6 +488,8 @@ a.room-card:hover .room-cta { transform: translateX(3px); }
   font-weight: 800;
   box-shadow: inset 0 -4px 0 rgba(67, 122, 158, .12);
 }
+.player-avatar.has-image { overflow: hidden; padding: 3px; background: #fff; box-shadow: 0 6px 18px -8px rgba(52, 79, 101, .45); }
+.player-card[data-state="ready"] .player-avatar.has-image { background: var(--wait); }
 .player-card[data-state="empty"] .player-avatar { background: transparent; border: 2px dashed var(--line-strong); color: #a3b4c2; font-weight: 400; }
 .player-card[data-state="ready"] .player-avatar { background: linear-gradient(145deg, #c9eedd, #95d5b8); color: #1f6b4f; }
 .player-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 1.15rem; font-weight: 800; }
@@ -545,6 +555,20 @@ a.room-card:hover .room-cta { transform: translateX(3px); }
   font-weight: 600;
 }
 .spectator-chip:not(:has(button)) { padding-right: 14px; }
+.spectator-chip { padding-left: 5px; }
+.spectator-avatar {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--sky);
+  color: var(--accent-deep);
+  font-size: .7rem;
+  font-weight: 700;
+  overflow: hidden;
+}
 .spectator-chip[data-me="true"] { border-color: var(--accent); background: var(--sky-soft); }
 .spectator-chip .btn-small { min-height: 26px; padding: 0 10px; border-radius: 999px; font-size: .75rem; }
 
@@ -566,6 +590,52 @@ a.room-card:hover .room-cta { transform: translateX(3px); }
   box-shadow: 0 10px 22px -12px rgba(31, 107, 79, .8), inset 0 1px 0 rgba(255, 255, 255, .25);
 }
 
+/* ---------- 트레이너 카드 팝업 ---------- */
+.profile-link {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+}
+.profile-link .player-avatar { transition: transform .2s, box-shadow .2s; }
+.profile-link:hover .player-avatar { transform: scale(1.05); box-shadow: 0 0 0 4px rgba(136, 187, 220, .45); }
+.profile-link:hover .player-name, .profile-link.inline:hover span:last-child { color: var(--accent-deep); text-decoration: underline; text-underline-offset: 3px; }
+.profile-link.inline { flex-direction: row; gap: 8px; font-weight: 600; }
+
+.profile-dialog {
+  width: min(1100px, calc(100vw - 24px));
+  height: min(620px, calc(100dvh - 24px));
+  padding: 0;
+  border: 1px solid #fff;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(160deg, #eaf4fc, #fdfeff);
+  box-shadow: 0 30px 90px rgba(40, 80, 110, .3);
+  overflow: hidden;
+}
+.profile-dialog::backdrop { background: rgba(52, 79, 101, .35); backdrop-filter: blur(6px); }
+.profile-dialog iframe { display: block; width: 100%; height: 100%; border: 0; }
+.profile-dialog-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 1;
+  width: 40px;
+  height: 40px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(255, 255, 255, .9);
+  color: var(--muted);
+  font-size: 1rem;
+  cursor: pointer;
+}
+.profile-dialog-close:hover { background: #fff; color: var(--accent-deep); }
+
 /* ---------- 반응형 ---------- */
 @media (max-width: 900px) {
   .room-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -582,6 +652,7 @@ a.room-card:hover .room-cta { transform: translateX(3px); }
   .player-avatar { width: 56px; height: 56px; font-size: 1.4rem; }
   .player-slot { width: 100%; }
   .player-name { flex: 1; }
+  .profile-link { flex-direction: row; flex: 1; gap: 12px; text-align: left; }
   .lobby-actions .btn { flex: 1; min-width: 0; }
   .login-card { padding: 36px 22px 26px; }
 }
@@ -610,6 +681,7 @@ a.room-card:hover .room-cta { transform: translateX(3px); }
 }
 /* 터치 기기: hover 이동 효과 대신 누를 때 반응 */
 @media (hover: none) {
+  .profile-link:hover .player-avatar { transform: none; box-shadow: none; }
   a.room-card:hover { transform: none; box-shadow: var(--shadow); }
   a.room-card:active { transform: scale(.98); }
 }

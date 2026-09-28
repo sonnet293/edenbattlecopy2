@@ -5,6 +5,7 @@ from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import { doc, getDoc, collection, onSnapshot }
 from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import { ROOMS, roomStatus, roomBgStyle } from "./rooms.js";
+import { fillAvatar } from "./avatar.js";
 
 const grid = document.getElementById("room-grid");
 const summary = document.getElementById("room-summary");
@@ -64,7 +65,11 @@ onAuthStateChanged(auth, async (user) => {
     const userSnap = await getDoc(doc(db, "users", myUid));
     const nickname = userSnap.data()?.nickname ?? "트레이너";
     document.getElementById("trainer-name").textContent = nickname;
-    document.getElementById("trainer-initial").textContent = [...nickname][0] ?? "?";
+    fillAvatar(document.getElementById("trainer-initial"), {
+        uid: myUid,
+        name: nickname,
+        src: userSnap.data()?.profileImage,
+    });
 
     if (!unsubRooms) {
         unsubRooms = onSnapshot(collection(db, "rooms"), (snap) => {

@@ -11,10 +11,13 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import { roomInfo, roomStatus, roomBgStyle } from "./rooms.js";
 import { vacateSeat } from "./roomLeave.js";
+import { fillAvatar } from "./avatar.js";
+import { syncPublicProfile } from "./publicProfile.js";
 
 const roomRef = doc(db, "rooms", ROOM_ID);
 let myUid = null;
 let myNickname = null;
+let myProfileImage = null;
 let latestRoom = null;
 
 const info = roomInfo(ROOM_ID);
@@ -56,6 +59,8 @@ onAuthStateChanged(auth, async (user) => {
     const userSnap = await getDoc(doc(db, "users", myUid));
     const userData = userSnap.data();
     myNickname = userData.nickname;
+    myProfileImage = userData.profileImage ?? null;
+    syncPublicProfile(myUid, userData); // 다른 사람이 내 트레이너 카드를 볼 수 있도록
 
     await joinRoom();
     listenRoom();
@@ -167,6 +172,43 @@ function renderHint(room, mySlot) {
     }
 }
 
+// 내 아바타는 users 문서의 profileImage(업로드마다 버전이 바뀜)를 우선 사용
+function avatarOptions(uid, name) {
+    return { uid, name, src: uid === myUid ? myProfileImage : null };
+}
+
+// 아바타+이름을 누르면 그 트레이너의 카드를 팝업으로 연다
+function profileLink(uid, name, className, ...children) {
+    const btn = el("button", className);
+    btn.type = "button";
+    btn.title = `${name ?? "트레이너"}의 트레이너 카드 보기`;
+    btn.append(...children);
+    btn.onclick = () => openTrainerCard(uid);
+    return btn;
+}
+
+// 대기실을 떠나지 않도록(게임 시작 시 자동 이동 유지) 프로필 페이지를 팝업 안 iframe으로 띄운다
+let profileDialog = null;
+function openTrainerCard(uid) {
+    if (!profileDialog) {
+        profileDialog = el("dialog", "profile-dialog");
+        const close = el("button", "profile-dialog-close", "✕");
+        close.type = "button";
+        close.setAttribute("aria-label", "닫기");
+        close.onclick = () => profileDialog.close();
+        const frame = el("iframe");
+        frame.title = "트레이너 카드";
+        profileDialog.append(close, frame);
+        profileDialog.addEventListener("click", (e) => {
+            if (e.target === profileDialog) profileDialog.close(); // 바깥 클릭 시 닫기
+        });
+        profileDialog.addEventListener("close", () => { frame.src = "about:blank"; });
+        document.body.append(profileDialog);
+    }
+    profileDialog.querySelector("iframe").src = `../profile.html?uid=${encodeURIComponent(uid)}&embed=1`;
+    profileDialog.showModal();
+}
+
 function renderPlayers(room, mySlot) {
     renderPlayerRow("player1", room, mySlot);
     renderPlayerRow("player2", room, mySlot);
@@ -184,11 +226,16 @@ function renderPlayerRow(slot, room, mySlot) {
     card.dataset.me = String(!!uid && uid === myUid);
     card.innerHTML = "";
 
+    const avatar = el("div", "player-avatar", "?");
+    if (uid) fillAvatar(avatar, avatarOptions(uid, name));
+
+    const nameEl = el("strong", "player-name", uid ? (name ?? "-") : "빈 자리");
+
     card.append(
         el("span", "player-slot", slot === "player1" ? "PLAYER 1" : "PLAYER 2"),
-        el("div", "player-avatar", uid ? ([...(name ?? "")][0] ?? "?") : "?"),
-        el("strong", "player-name", uid ? (name ?? "-") : "빈 자리"),
+        uid ? profileLink(uid, name, "profile-link", avatar, nameEl) : avatar,
     );
+    if (!uid) card.append(nameEl);
     if (uid) card.append(el("span", "ready-badge", ready ? "READY" : "대기 중"));
 
     const canRequest = mySlot === "spectator" && uid && !room.swap_request && !room.game_started;
@@ -221,7 +268,9 @@ function renderSpectators(room, mySlot) {
     uids.forEach((uid, i) => {
         const chip = el("li", "spectator-chip");
         chip.dataset.me = String(uid === myUid);
-        chip.append(el("span", null, names[i] ?? "-"));
+        const avatar = el("span", "spectator-avatar");
+        fillAvatar(avatar, avatarOptions(uid, names[i]));
+        chip.append(profileLink(uid, names[i], "profile-link inline", avatar, el("span", null, names[i] ?? "-")));
 
         if (canRequest) {
             const btn = el("button", "btn btn-ghost btn-small", "교체 요청");

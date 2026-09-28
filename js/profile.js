@@ -4,6 +4,7 @@ import { supabase, AVATAR_BUCKET } from "./supabase.js";
 import { POKEMON_KO } from "./data/pokemonKo.js";
 import { onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import { doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { syncPublicProfile, loadPublicProfile } from "./publicProfile.js";
 
 const SLOT_COUNT  = 6;
 const ENTRY_SLOTS = 3;   // 1~3번 칸은 users/{uid}.entry 에서 가져옴
@@ -37,6 +38,19 @@ let userRef   = null;
 let entry     = [];
 let cardSlots = Array(SLOT_COUNT).fill(null); // users/{uid}.cardSlots: [{ id, name } | null] x6
 let editingSlot = null;
+
+// profile.html?uid=다른사람 -> 공개 프로필(profiles/{uid})을 읽기 전용으로 표시
+// &embed=1 -> 대기실 팝업 안에 띄울 때 (뒤로가기 링크 숨김)
+const params   = new URLSearchParams(location.search);
+const viewUid  = params.get("uid");
+if (params.get("embed") === "1") document.documentElement.classList.add("embed");
+let readOnly   = false;
+let myUserData = {}; // 내 users 문서 (수정할 때마다 공개 프로필에 다시 복사)
+
+function syncMine(changes) {
+  Object.assign(myUserData, changes);
+  syncPublicProfile(auth.currentUser.uid, myUserData);
+}
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -112,8 +126,24 @@ function renderEntrySlot(index, mon) {
 
 function renderCustomSlot(index, mon) {
   const slot = el("div", "slot custom");
-  slot.title = "클릭해서 다른 포켓몬으로 변경";
   slot.append(el("span", "slot-no", String(index + 1).padStart(2, "0")));
+  const types = el("div");
+  const sprite = spriteImg(spriteUrl(mon.id), mon.name);
+
+  fetchPokemon(mon.id)
+    .then((p) => {
+      sprite.querySelector("img").src = p.sprite;
+      types.replaceWith(typeChips(p.types));
+    })
+    .catch(() => {});
+
+  if (readOnly) {
+    slot.classList.add("readonly");
+    slot.append(sprite, el("div", "slot-name", mon.name), types);
+    return slot;
+  }
+
+  slot.title = "클릭해서 다른 포켓몬으로 변경";
   const edit = el("button", "slot-edit");
   edit.type = "button";
   edit.setAttribute("aria-label", `${mon.name} 변경`);
@@ -129,21 +159,16 @@ function renderCustomSlot(index, mon) {
     saveSlot(index, null);
   });
 
-  const types = el("div");
-  const sprite = spriteImg(spriteUrl(mon.id), mon.name);
   slot.append(remove, sprite, el("div", "slot-name", mon.name), types);
-
-  fetchPokemon(mon.id)
-    .then((p) => {
-      sprite.querySelector("img").src = p.sprite;
-      types.replaceWith(typeChips(p.types));
-    })
-    .catch(() => {});
-
   return slot;
 }
 
 function renderEmptySlot(index) {
+  if (readOnly) {
+    const slot = el("div", "slot empty readonly");
+    slot.append(el("span", "slot-no", String(index + 1).padStart(2, "0")), el("span", null, "비어 있음"));
+    return slot;
+  }
   const slot = el("button", "slot empty");
   slot.type = "button";
   slot.setAttribute("aria-label", `${index + 1}번 칸에 포켓몬 추가`);
@@ -171,6 +196,7 @@ async function saveSlot(index, mon) {
   renderGrid();
   try {
     await setDoc(userRef, { cardSlots }, { merge: true });
+    syncMine({ cardSlots });
     showMessage("");
   } catch (err) {
     console.error(err);
@@ -228,7 +254,7 @@ function renderResults() {
 }
 
 function openSearch(index) {
-  if (!userRef) return;
+  if (!userRef || readOnly) return;
   editingSlot = index;
   searchInput.value = "";
   renderResults();
@@ -238,6 +264,7 @@ function openSearch(index) {
 
 searchInput.addEventListener("input", renderResults);
 document.getElementById("avatar").addEventListener("keydown", (event) => {
+  if (readOnly) return;
   if (event.key === "Enter" || event.key === " ") {
     event.preventDefault();
     avatarInput.click();
@@ -269,7 +296,7 @@ async function prepareImage(file) {
 avatarInput.addEventListener("change", async () => {
   const file = avatarInput.files[0];
   avatarInput.value = "";
-  if (!file || !auth.currentUser) return;
+  if (!file || !auth.currentUser || readOnly) return;
   if (file.size > 10 * 1024 * 1024) {
     showMessage("10MB 이하의 이미지만 올릴 수 있어요.");
     return;
@@ -288,6 +315,7 @@ avatarInput.addEventListener("change", async () => {
     const { data } = supabase.storage.from(AVATAR_BUCKET).getPublicUrl(path);
     const url = `${data.publicUrl}?v=${Date.now()}`; // 같은 경로 덮어쓰기라 캐시 무효화용
     await setDoc(userRef, { profileImage: url }, { merge: true });
+    syncMine({ profileImage: url });
     setAvatar(url);
   } catch (err) {
     console.error(err);
@@ -303,6 +331,11 @@ onAuthStateChanged(auth, async (user) => {
     location.href = "index.html";
     return;
   }
+  if (viewUid && viewUid !== user.uid) {
+    await showOtherTrainer(viewUid);
+    return;
+  }
+
   userRef = doc(db, "users", user.uid);
 
   try {
@@ -314,9 +347,43 @@ onAuthStateChanged(auth, async (user) => {
     }
     nameEl.textContent = data.nickname ?? user.email ?? "트레이너";
     setAvatar(data.profileImage ?? null);
+    myUserData = data;
+    syncMine({});
   } catch (err) {
     console.error(err);
     showMessage("정보를 불러오지 못했어요.");
   }
   renderGrid();
 });
+
+// 다른 트레이너의 카드 (읽기 전용)
+async function showOtherTrainer(uid) {
+  readOnly = true;
+  document.body.classList.add("readonly");
+  document.title = "트레이너 카드";
+  avatarInput.disabled = true;
+  const avatarLabel = document.getElementById("avatar");
+  avatarLabel.removeAttribute("title");
+  avatarLabel.removeAttribute("role");
+  avatarLabel.removeAttribute("aria-label");
+  avatarLabel.tabIndex = -1;
+  avatarHolder.replaceChildren(el("span", "avatar-symbol", "?"), el("span", null, "프로필 사진이 없어요"));
+
+  try {
+    const data = await loadPublicProfile(uid);
+    if (!data) {
+      nameEl.textContent = "???";
+      showMessage("아직 트레이너 카드를 만들지 않은 트레이너예요.");
+    } else {
+      entry = Array.isArray(data.entry) ? data.entry : [];
+      cardSlots = Array.from({ length: SLOT_COUNT }, (_, i) => data.cardSlots?.[i] ?? null);
+      nameEl.textContent = data.nickname ?? "트레이너";
+      document.title = `${data.nickname ?? "트레이너"}의 트레이너 카드`;
+      setAvatar(data.profileImage ?? null);
+    }
+  } catch (err) {
+    console.error(err);
+    showMessage("트레이너 카드를 불러오지 못했어요.");
+  }
+  renderGrid();
+}

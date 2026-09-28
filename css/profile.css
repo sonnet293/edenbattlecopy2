@@ -162,4 +162,13 @@ h2 { margin: 8px 0 0; font-size: 1.2rem; letter-spacing: -.035em; font-weight: 7
   .search-head { padding-inline: 16px; }
   .search-results { padding-inline: 16px; }
 }
+/* 다른 트레이너 카드 (읽기 전용) · 대기실 팝업 안에 띄울 때 */
+.readonly .avatar { cursor: default; }
+.readonly .avatar-edit { display: none; }
+.slot.readonly, .slot.empty.readonly { cursor: default; }
+.slot.empty.readonly:hover { transform: none; border-color: var(--line); background: rgba(255, 255, 255, .28); box-shadow: none; }
+.embed body { min-height: 0; padding: 16px; background: transparent; }
+.embed .back-link { display: none; }
+.embed .trainer-card { margin: 0 auto; }
+@media (max-width: 760px) { .embed body { padding: 10px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }

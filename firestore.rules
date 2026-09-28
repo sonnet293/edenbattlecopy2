@@ -35,6 +35,14 @@ service cloud.firestore {
       allow delete: if false;
     }
 
+    // 공개 트레이너 카드. 로그인한 사람은 누구나 읽을 수 있고, 본인만 정해진 필드로 쓸 수 있다 (js/publicProfile.js).
+    match /profiles/{uid} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['nickname', 'profileImage', 'cardSlots', 'entry', 'updatedAt']);
+      allow delete: if false;
+    }
+
     match /rooms/{roomId} {
       allow read: if signedIn();
       allow create, delete: if isGM();
