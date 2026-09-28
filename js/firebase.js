@@ -4,12 +4,12 @@ import { getAuth } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-aut
 import { getFirestore } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 
 const firebaseConfig = {
-  apiKey: "AIzaSyCiAFkXZPlkB3PYqMEkxHUor4w9twYOGGs",
-  authDomain: "eden-98094.firebaseapp.com",
-  projectId: "eden-98094",
-  storageBucket: "eden-98094.firebasestorage.app",
-  messagingSenderId: "185087039241",
-  appId: "1:185087039241:web:d4c7099326f660ff2ca5d8"
+  apiKey: "AIzaSyDCB_ojNPf3hSEl8m-hx-Ba87Bf5l7pPic",
+  authDomain: "pokebattle-7a6b0.firebaseapp.com",
+  projectId: "pokebattle-7a6b0",
+  storageBucket: "pokebattle-7a6b0.firebasestorage.app",
+  messagingSenderId: "713322888133",
+  appId: "1:713322888133:web:7b495cdd2a50ecf3d2e9ac"
 };
 
 const app = initializeApp(firebaseConfig);

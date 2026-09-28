@@ -1,7 +1,6 @@
 // gm/gm.js
 // GM 브라우저 = 권한 서버. 모든 방의 요청(rooms/{roomId}/actions)을 구독해서
 // js/engine.js로 판정한 뒤, 방 상태 갱신과 요청 처리 완료 표시를 한 트랜잭션으로 반영한다.
-// Firestore 보안 규칙상 전투 상태 필드는 GM 계정만 쓸 수 있다 (firestore.rules 참고).
 import { auth, db } from "../js/firebase.js";
 import {
   onAuthStateChanged,

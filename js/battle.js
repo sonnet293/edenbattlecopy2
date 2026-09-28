@@ -13,7 +13,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
 import { MOVES } from "./moves.js";
 import { formatPokemonName } from "./effecthandler.js";
-import { displayName } from "./engine.js";
+import { displayName, isMoveLocked } from "./engine.js";
 
 const roomRef = doc(db, "rooms", ROOM_ID);
 const actionsRef = collection(roomRef, "actions");
@@ -211,9 +211,14 @@ async function maybeInitRound(room) {
   await sendAction("init");
 }
 
-function useMove(moveIdx) {
-  return requestTurnAction("move", { moveIdx });
+// switchIdx: 유턴류 기술로 공격 후 교체해 들어갈 벤치 번호 (공격+교체를 한 요청으로 보냄)
+function useMove(moveIdx, switchIdx = null) {
+  uTurnPick = null;
+  return requestTurnAction("move", switchIdx === null ? { moveIdx } : { moveIdx, switchIdx });
 }
+
+// 유턴류 기술 버튼을 누른 뒤 교체할 벤치를 고르는 중이면 그 기술 번호, 아니면 null
+let uTurnPick = null;
 
 // 벤치 포켓몬 교체 요청. 강제/자발적 교체 구분과 턴 소모는 GM(engine.switchPokemon)이 판단한다.
 function switchPokemon(targetIdx) {
@@ -261,7 +266,9 @@ function renderBoard(room, isNewRound = false) {
 }
 
 function renderTurnUI(room) {
+  if (room.battle_turn !== slotKey(mySlot) || room.battle_winner) uTurnPick = null; // 내 턴이 끝나면 유턴 선택 취소
   renderTurn(room);
+  if (uTurnPick !== null) document.getElementById("turn-indicator").innerText = "유턴 후 교체할 포켓몬을 선택!";
   renderMoveButtons(room);
   renderBench(room);
 }
@@ -320,7 +327,11 @@ function triggerBlink(prefix) {
 
 // mine/enemy 패널의 HP바/스탯/초상화를 즉시(연출 없이) 채워 넣음.
 // 슬라이드 인 연출이 필요하면 호출부에서 updatePortrait(side, pkmn, true)를 따로 호출한다.
+// 화면에 현재 표시 중인 포켓몬(연출 도중의 상태). status 연출이 이름 표시만 바꿀 때 사용.
+const shownPokemon = { mine: null, enemy: null };
+
 function applyPokemonVisual(side, pkmn, idx) {
+  shownPokemon[side] = pkmn;
   const hpText = document.getElementById(`${side}-hp`);
   const hpBar = document.getElementById(`${side}-hp-bar`);
   const stats = document.getElementById(`${side}-stats`);
@@ -368,9 +379,13 @@ function renderMoveButtons(room) {
       !room.battle_winner &&
       !isAnimating &&
       !actionInFlight;
-    const usable = canAct && (move.pp ?? 0) > 0;
+    // 고스트다이브로 사라진 상태면 그 기술만 누를 수 있음 (다음 턴 강제 공격, PP는 이미 소모됨)
+    const diving = myPkmn.ghostDive;
+    const locked = isMoveLocked(myPkmn, move.name, room.round_no ?? 0); // 거대해머: 사용 다음 라운드엔 잠김
+    const usable = diving ? canAct && diving.moveIdx === i : canAct && (move.pp ?? 0) > 0 && !locked;
 
     const moveData = MOVES[move.name];
+    btn.classList.toggle("uturn-picking", uTurnPick === i);
     btn.style.display = "inline-flex";
     btn.style.backgroundColor = TYPE_COLORS[moveData?.type] ?? "var(--accent)";
     btn.style.opacity = usable ? "1" : "0.45";
@@ -379,6 +394,14 @@ function renderMoveButtons(room) {
     btn.disabled = !usable;
     btn.onclick = () => {
       playButtonSound();
+      // 유턴류 기술: 교체할 수 있는 벤치가 있으면 먼저 교체 대상을 고르게 함 (같은 버튼을 다시 누르면 취소)
+      const canPivot = moveData?.uTurn && !diving &&
+        (myPkmn.hp > 0) && room[`${myKey}_entry`].some((p, idx) => idx !== activeIdx && p && p.hp > 0);
+      if (canPivot) {
+        uTurnPick = uTurnPick === i ? null : i;
+        renderTurnUI(room);
+        return;
+      }
       useMove(i);
     };
   }
@@ -403,10 +426,12 @@ function renderBenchSide(dataKey, uiKey, room) {
   const anyonePending = !!room.p1_pending_switch || !!room.p2_pending_switch;
 
   const canForcedSwitch = myKey === dataKey && pendingSwitch;
+  const canUTurnSwitch = myKey === dataKey && uTurnPick !== null && !isAnimating && !actionInFlight;
   const canVoluntarySwitch =
     myKey === dataKey &&
     !pendingSwitch &&
     !anyonePending &&
+    !entry[activeIdx]?.ghostDive &&
     !room.battle_winner &&
     !isAnimating &&
     !actionInFlight &&
@@ -425,7 +450,7 @@ function renderBenchSide(dataKey, uiKey, room) {
     if (isActive) return; // 이미 출전 중인 포켓몬은 벤치에 버튼을 표시하지 않음
 
     const isFainted = pkmn.hp <= 0;
-    const usable = (canForcedSwitch || canVoluntarySwitch) && !isFainted;
+    const usable = (canForcedSwitch || canVoluntarySwitch || canUTurnSwitch) && !isFainted;
 
     const btn = document.createElement("button");
     btn.type = "button";
@@ -445,7 +470,8 @@ function renderBenchSide(dataKey, uiKey, room) {
 
     btn.onclick = () => {
       playButtonSound();
-      switchPokemon(idx);
+      if (uTurnPick !== null) useMove(uTurnPick, idx);
+      else switchPokemon(idx);
     };
     container.appendChild(btn);
   });
@@ -464,7 +490,7 @@ const HIT_ANIM_DELAY_MS = 350; // 로그 타이핑이 끝난 뒤 shake/blink 연
 let renderedLogCount = 0; // 지금까지 큐에 반영한 로그 줄 수
 let renderedEventCount = 0; // 지금까지 큐에 반영한 연출 이벤트 수
 let boardInitialized = false; // 최초 진입/재접속 시엔 연출 없이 즉시 표시
-let boardQueue = []; // { kind: "log", text } | { kind: "hit"|"switch", side, pkmn, idx, hasAttacker? }
+let boardQueue = []; // { kind: "log", text } | { kind: "hit"|"switch", side, pkmn, idx, hasAttacker? } | { kind: "status", side, status } | { kind: "heal", side, hp }
 let boardBusy = false;
 
 function trimLogLines(el) {
@@ -530,6 +556,26 @@ function processBoardQueue() {
         next();
       });
     }, HIT_ANIM_DELAY_MS);
+    return;
+  }
+
+  if (step.kind === "heal") {
+    // 흡수 회복: 연출 없이 HP바만 갱신
+    const shown = shownPokemon[step.side];
+    if (shown) applyPokemonVisual(step.side, { ...shown, hp: step.hp });
+    next();
+    return;
+  }
+
+  if (step.kind === "status") {
+    // 상태이상이 걸리거나 풀린 로그 줄 직후 바로 이름 옆 [상태] 표시만 갱신
+    const stats = document.getElementById(`${step.side}-stats`);
+    const shown = shownPokemon[step.side];
+    if (stats && shown) {
+      shownPokemon[step.side] = { ...shown, status: step.status };
+      stats.innerText = formatPokemonName(shownPokemon[step.side]);
+    }
+    next();
     return;
   }
 
@@ -615,7 +661,14 @@ function renderLogAndBoard(room, isNewRound = false) {
       if (ev.type === "hit") {
         const finalPkmn = side === "mine" ? minePkmn : enemyPkmn;
         const idx = side === "mine" ? mineIdx : enemyIdx;
-        boardQueue.push({ kind: "hit", side, pkmn: { ...finalPkmn, hp: ev.hp }, idx, hasAttacker: ev.hasAttacker });
+        // 피격 시점의 상태이상(ev.status)을 써야, 뒤에 걸릴 상태이상이 미리 표시되지 않음
+        const hitPkmn = { ...finalPkmn, hp: ev.hp };
+        if ("status" in ev) hitPkmn.status = ev.status;
+        boardQueue.push({ kind: "hit", side, pkmn: hitPkmn, idx, hasAttacker: ev.hasAttacker });
+      } else if (ev.type === "heal") {
+        boardQueue.push({ kind: "heal", side, hp: ev.hp });
+      } else if (ev.type === "status") {
+        boardQueue.push({ kind: "status", side, status: ev.status });
       } else if (ev.type === "switch") {
         const finalPkmn = side === "mine" ? minePkmn : enemyPkmn;
         boardQueue.push({ kind: "switch", side, pkmn: finalPkmn, idx: ev.idx });
