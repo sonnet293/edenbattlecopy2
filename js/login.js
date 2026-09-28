@@ -3,6 +3,7 @@ import { auth } from "./firebase.js";
 import { signInWithEmailAndPassword, onAuthStateChanged }
 from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 
+const loginForm = document.getElementById("loginForm");
 const emailInput = document.getElementById("email");
 const passwordInput = document.getElementById("password");
 const loginBtn = document.getElementById("loginBtn");
@@ -14,9 +15,20 @@ onAuthStateChanged(auth, (user) => {
     }
 });
 
-loginBtn.addEventListener("click", async () => {
+// 버튼 클릭과 Enter 키 모두 submit으로 처리
+loginForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
     const email = emailInput.value.trim();
     const password = passwordInput.value;
+
+    if (!email || !password) {
+        message.textContent = "이메일과 비밀번호를 입력해주세요.";
+        return;
+    }
+
+    message.textContent = "";
+    loginBtn.disabled = true;
+    loginBtn.textContent = "로그인 중…";
 
     try {
         await signInWithEmailAndPassword(auth, email, password);
@@ -25,5 +37,7 @@ loginBtn.addEventListener("click", async () => {
     } catch (error) {
         message.textContent = "이메일과 비밀번호를 확인해주세요.";
         console.error(error);
+        loginBtn.disabled = false;
+        loginBtn.textContent = "로그인";
     }
 });

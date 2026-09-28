@@ -14,6 +14,7 @@ import {
 import { MOVES } from "./moves.js";
 import { formatPokemonName } from "./effecthandler.js";
 import { displayName, isMoveLocked } from "./engine.js";
+import { vacateSeat } from "./roomLeave.js";
 
 const roomRef = doc(db, "rooms", ROOM_ID);
 const actionsRef = collection(roomRef, "actions");
@@ -225,23 +226,34 @@ function switchPokemon(targetIdx) {
   return requestTurnAction("switch", { targetIdx });
 }
 
-// 전투 종료 후 LEAVE 버튼 클릭 시: GM이 내 슬롯을 비우고 전투 필드를 초기화하면 로비로 이동.
-// (초기화 전에 이동하면 로비에서 game_started가 아직 true라 다시 전투 화면으로 튕기므로, 처리 완료를 기다린다)
+// 전투 종료 후 LEAVE 버튼 클릭 시: GM이 내 슬롯을 비우고 전투 필드를 초기화하면 메인으로 이동.
+// 상대가 먼저 LEAVE해서 방이 이미 초기화됐으면(game_started=false) GM을 거치지 않고 직접 자리를 비운다.
 let leaveInFlight = false;
+let sawBattle = false; // 이 화면에서 전투 중/종료 상태를 본 적이 있는지 (초기화 감지용)
 async function leaveBattle() {
-  if (leaveInFlight || !latestRoom?.battle_winner) return;
+  if (leaveInFlight || !latestRoom) return;
+  const alreadyReset = sawBattle && !latestRoom.game_started;
+  if (!latestRoom.battle_winner && !alreadyReset) return;
+
   leaveInFlight = true;
-  const result = await sendAction("leave");
-  leaveInFlight = false;
-  if (result.status !== "done") return;
-  const roomNumber = ROOM_ID.replace("battleroom", "");
-  location.href = `../pages/battleroom${roomNumber}.html`;
+  if (alreadyReset) {
+    await vacateSeat(roomRef, latestRoom, myUid);
+  } else {
+    const result = await sendAction("leave");
+    if (result.status !== "done") {
+      leaveInFlight = false;
+      return;
+    }
+  }
+  location.href = "../main.html";
 }
 
 function renderLeaveButton(room) {
   const btn = document.getElementById("leaveBtn");
   if (!btn) return;
-  btn.style.display = room.battle_winner ? "inline-block" : "none";
+  if (room.game_started) sawBattle = true;
+  const canLeave = !!room.battle_winner || (sawBattle && !room.game_started);
+  btn.style.display = canLeave ? "inline-block" : "none";
   btn.onclick = () => {
     playButtonSound();
     leaveBattle();

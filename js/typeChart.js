@@ -32,3 +32,10 @@ export function getTypeMultiplier(moveType, defenderType) {
     if (val === undefined) return 1;
     return val;
 }
+
+// 포켓몬 데이터의 타입을 배열로 통일 (엔트리에 따라 types 또는 type 필드, 문자열 하나일 수도 있음)
+export function pokemonTypes(pokemon) {
+    const t = pokemon?.types ?? pokemon?.type;
+    if (Array.isArray(t)) return t;
+    return t ? [t] : [];
+}

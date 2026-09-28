@@ -5,15 +5,32 @@ from "https://www.gstatic.com/firebasejs/10.12.0/firebase-auth.js";
 import {
   doc,
   getDoc,
-  setDoc,
   updateDoc,
   onSnapshot,
   deleteField,
 } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+import { roomInfo, roomStatus, roomBgStyle } from "./rooms.js";
+import { vacateSeat } from "./roomLeave.js";
 
 const roomRef = doc(db, "rooms", ROOM_ID);
 let myUid = null;
 let myNickname = null;
+let latestRoom = null;
+
+const info = roomInfo(ROOM_ID);
+if (info) {
+    document.getElementById("room-name").textContent = info.name;
+    document.title = `${info.name} · 대기실`;
+    const bg = roomBgStyle(info, "../img/");
+    if (bg) document.getElementById("lobby-hero").style.setProperty("--room-bg", bg);
+}
+
+const el = (tag, className, text) => {
+    const node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text != null) node.textContent = text;
+    return node;
+};
 
 function calcMySlot(room) {
     if (!room || !myUid) return null;
@@ -30,7 +47,10 @@ function slotLabel(slot) {
 }
 
 onAuthStateChanged(auth, async (user) => {
-    if (!user) return;
+    if (!user) {
+        location.href = "../index.html";
+        return;
+    }
     myUid = user.uid;
 
     const userSnap = await getDoc(doc(db, "users", myUid));
@@ -76,12 +96,15 @@ function listenRoom() {
     onSnapshot(roomRef, async (snap) => {
         const room = snap.data();
         if (!room) return;
+        latestRoom = room;
 
         const mySlot = calcMySlot(room);
 
+        renderStatus(room);
         renderPlayers(room, mySlot);
         renderSpectators(room, mySlot);
         renderSwapStatus(room);
+        renderHint(room, mySlot);
         updateButtonsBySlot(room, mySlot);
 
         // 양쪽 READY가 되면 GM 브라우저(gm/gm.js)가 엔트리를 등록하고 game_started를 켠다.
@@ -102,9 +125,46 @@ function updateButtonsBySlot(room, mySlot) {
     const readyBtn = document.getElementById("readyBtn");
     const leaveBtn = document.getElementById("leaveBtn");
 
-    if (readyBtn) readyBtn.style.display = isPlayer ? "inline-block" : "none";
-    if (readyBtn) readyBtn.disabled = !!room.swap_request;
+    if (readyBtn) {
+        const isReady = isPlayer && !!room[`${mySlot}_ready`];
+        readyBtn.hidden = !isPlayer;
+        readyBtn.disabled = !!room.swap_request || !!room.game_started;
+        readyBtn.textContent = isReady ? "READY 취소" : "READY";
+        readyBtn.setAttribute("aria-pressed", String(isReady));
+    }
     if (leaveBtn) leaveBtn.disabled = isPlayer && !!room.game_started;
+}
+
+function renderStatus(room) {
+    const pill = document.getElementById("room-status");
+    if (!pill) return;
+    const status = roomStatus(room);
+    pill.dataset.status = status.key;
+    pill.querySelector("span").textContent = status.label;
+}
+
+function renderHint(room, mySlot) {
+    const hintEl = document.getElementById("lobby-hint");
+    if (!hintEl) return;
+
+    const isPlayer = mySlot === "player1" || mySlot === "player2";
+    const bothSeated = !!room.player1_uid && !!room.player2_uid;
+    const bothReady = !!room.player1_ready && !!room.player2_ready;
+
+    hintEl.innerHTML = "";
+    if (room.game_started) {
+        hintEl.append("배틀 화면으로 이동하는 중…");
+    } else if (bothSeated && bothReady) {
+        hintEl.append(el("strong", null, "양쪽 모두 READY!"), " 곧 배틀이 시작됩니다.");
+    } else if (!bothSeated) {
+        hintEl.append("상대 트레이너를 기다리는 중입니다.");
+    } else if (isPlayer && room[`${mySlot}_ready`]) {
+        hintEl.append("상대의 READY를 기다리는 중… 버튼을 다시 누르면 READY가 취소됩니다.");
+    } else if (isPlayer) {
+        hintEl.append("준비가 되면 ", el("strong", null, "READY"), "를 눌러주세요.");
+    } else {
+        hintEl.append("두 플레이어가 모두 READY하면 배틀이 시작됩니다.");
+    }
 }
 
 function renderPlayers(room, mySlot) {
@@ -113,85 +173,98 @@ function renderPlayers(room, mySlot) {
 }
 
 function renderPlayerRow(slot, room, mySlot) {
-    const el = document.getElementById(slot);
-    if (!el) return;
+    const card = document.getElementById(slot);
+    if (!card) return;
 
     const uid = room[`${slot}_uid`];
     const name = room[`${slot}_name`];
+    const ready = !!uid && !!room[`${slot}_ready`];
 
-    el.innerHTML = "";
-    el.append(`${slotLabel(slot)}: ${name ?? "대기"}`);
+    card.dataset.state = !uid ? "empty" : ready ? "ready" : "waiting";
+    card.dataset.me = String(!!uid && uid === myUid);
+    card.innerHTML = "";
+
+    card.append(
+        el("span", "player-slot", slot === "player1" ? "PLAYER 1" : "PLAYER 2"),
+        el("div", "player-avatar", uid ? ([...(name ?? "")][0] ?? "?") : "?"),
+        el("strong", "player-name", uid ? (name ?? "-") : "빈 자리"),
+    );
+    if (uid) card.append(el("span", "ready-badge", ready ? "READY" : "대기 중"));
 
     const canRequest = mySlot === "spectator" && uid && !room.swap_request && !room.game_started;
     if (canRequest) {
-        const btn = document.createElement("button");
-        btn.textContent = "교체 요청";
+        const btn = el("button", "btn btn-ghost btn-small", "교체 요청");
+        btn.type = "button";
         btn.onclick = () => requestSwap(slot, uid, name);
-        el.appendChild(btn);
+        card.appendChild(btn);
     }
 }
 
 function renderSpectators(room, mySlot) {
-    const el = document.getElementById("spectator-list");
-    if (!el) return;
+    const list = document.getElementById("spectator-list");
+    if (!list) return;
 
     const uids = room.spectators ?? [];
     const names = room.spectator_names ?? [];
 
-    el.innerHTML = "";
+    document.getElementById("spectator-count").textContent = uids.length;
+    list.innerHTML = "";
 
     if (uids.length === 0) {
-        el.append("관전자: 없음");
+        list.append(el("li", "empty", "아직 관전자가 없습니다."));
         return;
     }
-
-    el.append("관전자: ");
 
     const isPlayer = mySlot === "player1" || mySlot === "player2";
     const canRequest = isPlayer && !room.swap_request && !room.game_started;
 
     uids.forEach((uid, i) => {
-        const span = document.createElement("span");
-        span.textContent = names[i] + " ";
-        el.appendChild(span);
+        const chip = el("li", "spectator-chip");
+        chip.dataset.me = String(uid === myUid);
+        chip.append(el("span", null, names[i] ?? "-"));
 
         if (canRequest) {
-            const btn = document.createElement("button");
-            btn.textContent = "교체 요청";
+            const btn = el("button", "btn btn-ghost btn-small", "교체 요청");
+            btn.type = "button";
             btn.onclick = () => requestSwap("spectator", uid, names[i]);
-            el.appendChild(btn);
+            chip.appendChild(btn);
         }
+        list.appendChild(chip);
     });
 }
 
 function renderSwapStatus(room) {
-    const el = document.getElementById("swap-status");
-    if (!el) return;
+    const banner = document.getElementById("swap-status");
+    if (!banner) return;
 
-    el.innerHTML = "";
+    banner.innerHTML = "";
 
     const req = room.swap_request;
+    banner.hidden = !req;
     if (!req) return;
 
+    const text = el("span", "swap-text");
+    const actions = el("div", "swap-actions");
+    const addButton = (label, variant, onclick) => {
+        const btn = el("button", `btn btn-small ${variant}`, label);
+        btn.type = "button";
+        btn.onclick = onclick;
+        actions.appendChild(btn);
+    };
+
     if (req.toUid === myUid) {
-        el.append(`${req.fromName}님이 ${slotLabel(req.fromSlot)} 자리와의 교체를 요청했습니다.`);
-        const acceptBtn = document.createElement("button");
-        acceptBtn.textContent = "수락";
-        acceptBtn.onclick = () => respondSwap(true);
-        const rejectBtn = document.createElement("button");
-        rejectBtn.textContent = "거절";
-        rejectBtn.onclick = () => respondSwap(false);
-        el.appendChild(acceptBtn);
-        el.appendChild(rejectBtn);
+        text.textContent = `${req.fromName}님이 ${slotLabel(req.fromSlot)} 자리와의 교체를 요청했습니다.`;
+        addButton("수락", "btn-primary", () => respondSwap(true));
+        addButton("거절", "btn-ghost", () => respondSwap(false));
     } else if (req.fromUid === myUid) {
-        el.append(`${req.toName}님에게 교체를 요청했습니다. 응답을 기다리는 중...`);
-        const cancelBtn = document.createElement("button");
-        cancelBtn.textContent = "요청 취소";
-        cancelBtn.onclick = () => cancelSwap();
-        el.appendChild(cancelBtn);
+        text.textContent = `${req.toName}님에게 교체를 요청했습니다. 응답을 기다리는 중...`;
+        addButton("요청 취소", "btn-ghost", () => cancelSwap());
     } else {
-        el.append(`${req.fromName}님이 ${req.toName}님에게 교체를 요청했습니다.`);
+        text.textContent = `${req.fromName}님이 ${req.toName}님에게 교체를 요청했습니다.`;
     }
+
+    banner.append(text);
+    if (actions.childElementCount) banner.append(actions);
 }
 
 async function requestSwap(toSlot, toUid, toName) {
@@ -275,11 +348,22 @@ async function respondSwap(accepted) {
 }
 
 function setupButtons() {
-  document.getElementById("readyBtn").onclick = async () => {
-    const roomSnap = await getDoc(roomRef);
-    const mySlot = calcMySlot(roomSnap.data());
-    if (mySlot === "player1") await updateDoc(roomRef, { player1_ready: true });
-    if (mySlot === "player2") await updateDoc(roomRef, { player2_ready: true });
+  const readyBtn = document.getElementById("readyBtn");
+
+  // READY 토글: 누르면 READY, 한 번 더 누르면 READY 취소
+  readyBtn.onclick = async () => {
+    readyBtn.disabled = true;
+    try {
+      const roomSnap = await getDoc(roomRef);
+      const room = roomSnap.data();
+      const mySlot = calcMySlot(room);
+      if ((mySlot !== "player1" && mySlot !== "player2") || room.game_started) return;
+      const key = `${mySlot}_ready`;
+      await updateDoc(roomRef, { [key]: !room[key] });
+    } finally {
+      readyBtn.disabled = false;
+      if (latestRoom) updateButtonsBySlot(latestRoom, calcMySlot(latestRoom));
+    }
   };
 
   document.getElementById("leaveBtn").onclick = async () => {
@@ -291,44 +375,7 @@ function setupButtons() {
     if (isPlayer && room.game_started) {
       return;
     }
-    await leaveRoom(mySlot, room);
-  };
-}
-
-async function leaveRoom(mySlot, room) {
-    const req = room.swap_request;
-    const swapClear = req && (req.fromUid === myUid || req.toUid === myUid)
-        ? { swap_request: deleteField() }
-        : {};
-
-    if (mySlot === "player1" || mySlot === "player2") {
-        const spectators = room.spectators ?? [];
-        const spectatorNames = room.spectator_names ?? [];
-
-        if (spectators.length > 0) {
-            const randIdx = Math.floor(Math.random() * spectators.length);
-            await updateDoc(roomRef, {
-                [`${mySlot}_uid`]: spectators[randIdx],
-                [`${mySlot}_name`]: spectatorNames[randIdx],
-                [`${mySlot}_ready`]: false,
-                spectators: spectators.filter((_, i) => i !== randIdx),
-                spectator_names: spectatorNames.filter((_, i) => i !== randIdx),
-                ...swapClear
-            });
-        } else {
-            await updateDoc(roomRef, {
-                [`${mySlot}_uid`]: null,
-                [`${mySlot}_name`]: null,
-                [`${mySlot}_ready`]: false,
-                ...swapClear
-            });
-        }
-    } else {
-        await updateDoc(roomRef, {
-            spectators: (room.spectators ?? []).filter(u => u !== myUid),
-            spectator_names: (room.spectator_names ?? []).filter(n => n !== myNickname),
-            ...swapClear
-        });
-    }
+    await vacateSeat(roomRef, room, myUid);
     location.href = "../main.html";
+  };
 }
